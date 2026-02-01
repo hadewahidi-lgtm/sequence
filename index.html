@@ -713,14 +713,14 @@
                 <div class="bet-section">
                     <label>Bet Amount</label>
                     <div class="bet-options">
-                        <button class="bet-btn" onclick="selectBet(0)">Free</button>
-                        <button class="bet-btn active" onclick="selectBet(50)">50</button>
+                        <button class="bet-btn active" onclick="selectBet(0)">Free</button>
+                        <button class="bet-btn" onclick="selectBet(50)">50</button>
                         <button class="bet-btn" onclick="selectBet(100)">100</button>
                         <button class="bet-btn" onclick="selectBet(250)">250</button>
                     </div>
                 </div>
 
-                <button class="btn btn-primary" style="width: 100%;" onclick="createGame()">
+                <button class="btn btn-primary" style="width: 100%;" onclick="createRoom()">
                     Create Room
                 </button>
             </div>
@@ -728,7 +728,7 @@
             <div class="lobby-card">
                 <h2>Join Game</h2>
                 <input type="text" class="lobby-input" id="join-code" placeholder="ENTER CODE" maxlength="6">
-                <button class="btn btn-gold" style="width: 100%;" onclick="joinGame()">
+                <button class="btn btn-gold" style="width: 100%;" onclick="joinRoom()">
                     Join Room
                 </button>
             </div>
@@ -777,7 +777,7 @@
 
                 <div class="waiting-spinner" style="margin-top: 20px;"></div>
                 <p class="waiting-text" id="waiting-status">Waiting for players to join...</p>
-                <button class="btn btn-danger" onclick="cancelGame()">Cancel</button>
+                <button class="btn btn-danger" onclick="cancelRoom()">Cancel</button>
             </div>
         </div>
     </div>
@@ -879,17 +879,15 @@
 
         let db = null;
         let gameRef = null;
-        let isOnlineMode = false;
-        let isFirebaseConfigured = false;
+        let unsubscribe = null;
 
+        // Initialize Firebase
         try {
-            if (!firebaseConfig.apiKey.includes('YOUR_')) {
-                firebase.initializeApp(firebaseConfig);
-                db = firebase.database();
-                isFirebaseConfigured = true;
-            }
+            firebase.initializeApp(firebaseConfig);
+            db = firebase.database();
+            console.log('Firebase initialized successfully');
         } catch (e) {
-            console.log('Firebase not configured');
+            console.error('Firebase init error:', e);
         }
 
         // ============================================
@@ -913,7 +911,7 @@
         const PLAYER_COLORS = { 1: 'Blue', 2: 'Green', 3: 'Purple' };
 
         // ============================================
-        // PLAYER DATA (Saved in localStorage)
+        // PLAYER DATA (localStorage)
         // ============================================
         let playerData = JSON.parse(localStorage.getItem('sequencePlayerData')) || {
             coins: 1000,
@@ -922,29 +920,29 @@
         };
 
         // ============================================
-        // LOBBY STATE
-        // ============================================
-        let selectedMode = 2; // 2 or 3 players
-        let selectedBet = 50;
-
-        // ============================================
         // GAME STATE
         // ============================================
-        let gameState = {
-            roomCode: null,
-            myPlayer: null,
-            numPlayers: 2,
-            currentPlayer: 1,
+        let selectedMode = 2;
+        let selectedBet = 0;
+        let isOnlineMode = false;
+        let myPlayerNumber = null;
+        let currentRoomCode = null;
+
+        let game = {
             board: [],
             hands: {},
             deck: [],
-            selectedCard: null,
+            currentPlayer: 1,
             sequences: {},
+            numPlayers: 2,
             sequencesToWin: 2,
             status: 'waiting',
             bet: 0,
-            pot: 0
+            pot: 0,
+            players: {}
         };
+
+        let selectedCardIndex = null;
 
         // ============================================
         // INITIALIZATION
@@ -1009,221 +1007,9 @@
             return code;
         }
 
-        function createGame() {
-            if (selectedBet > playerData.coins) {
-                showToast('Not enough coins!');
-                return;
-            }
-
-            if (!isFirebaseConfigured) {
-                showToast('Starting local game...');
-                setTimeout(() => startLocalGame(), 1000);
-                return;
-            }
-
-            const roomCode = generateRoomCode();
-            gameState.roomCode = roomCode;
-            gameState.myPlayer = 1;
-            gameState.numPlayers = selectedMode;
-            gameState.bet = selectedBet;
-            gameState.pot = selectedBet;
-            gameState.sequencesToWin = selectedMode === 2 ? 2 : 1;
-
-            // Deduct bet
-            if (selectedBet > 0) {
-                playerData.coins -= selectedBet;
-                savePlayerData();
-            }
-
-            const initialState = createInitialGameState(selectedMode);
-            initialState.status = 'waiting';
-            initialState.bet = selectedBet;
-            initialState.pot = selectedBet;
-            initialState.numPlayers = selectedMode;
-            initialState.sequencesToWin = gameState.sequencesToWin;
-
-            const players = { 1: true };
-            for (let i = 2; i <= selectedMode; i++) {
-                players[i] = false;
-            }
-            initialState.players = players;
-
-            gameRef = db.ref('games/' + roomCode);
-            gameRef.set(initialState).then(() => {
-                document.getElementById('room-code-display').textContent = roomCode;
-                document.getElementById('waiting-pot').textContent = '🪙 ' + initialState.pot;
-                updateWaitingStatus();
-                showScreen('waiting-screen');
-
-                gameRef.on('value', (snapshot) => {
-                    let data = snapshot.val();
-                    if (data) {
-                        data = convertFirebaseData(data);
-                        gameState = { ...gameState, ...data };
-                        document.getElementById('waiting-pot').textContent = '🪙 ' + (data.pot || 0);
-                        updateWaitingStatus();
-
-                        // Check if all players joined
-                        const allJoined = Object.values(data.players || {}).every(p => p === true);
-                        if (allJoined && Object.keys(data.players).length === selectedMode) {
-                            startOnlineGame();
-                        }
-                    }
-                });
-            });
-
-            // Room will persist until game ends
-        }
-
-        function updateWaitingStatus() {
-            const players = gameState.players || {};
-            const joined = Object.values(players).filter(p => p).length;
-            const needed = gameState.numPlayers || 2;
-            document.getElementById('waiting-status').textContent =
-                `${joined}/${needed} players joined...`;
-        }
-
-        function joinGame() {
-            if (!isFirebaseConfigured) {
-                showToast('Online mode not configured');
-                return;
-            }
-
-            const code = document.getElementById('join-code').value.toUpperCase().trim();
-            if (code.length !== 6) {
-                showToast('Enter a 6-character code');
-                return;
-            }
-
-            gameRef = db.ref('games/' + code);
-            gameRef.once('value').then((snapshot) => {
-                let data = snapshot.val();
-                if (!data) {
-                    showToast('Room not found');
-                    return;
-                }
-                data = convertFirebaseData(data);
-
-                // Find empty slot
-                let playerSlot = null;
-                for (let i = 2; i <= (data.numPlayers || 2); i++) {
-                    if (!data.players[i]) {
-                        playerSlot = i;
-                        break;
-                    }
-                }
-
-                if (!playerSlot) {
-                    showToast('Room is full');
-                    return;
-                }
-
-                // Check if player has enough coins
-                if (data.bet > playerData.coins) {
-                    showToast('Not enough coins! Need ' + data.bet);
-                    return;
-                }
-
-                // Deduct bet
-                if (data.bet > 0) {
-                    playerData.coins -= data.bet;
-                    savePlayerData();
-                }
-
-                gameState.roomCode = code;
-                gameState.myPlayer = playerSlot;
-                gameState.bet = data.bet;
-
-                const updates = {};
-                updates['players/' + playerSlot] = true;
-                updates['pot'] = (data.pot || 0) + data.bet;
-
-                // Check if this completes the game
-                const willComplete = Object.values(data.players).filter(p => p).length + 1 === data.numPlayers;
-                if (willComplete) {
-                    updates['status'] = 'playing';
-                }
-
-                gameRef.update(updates).then(() => {
-                    gameState = { ...gameState, ...data, status: willComplete ? 'playing' : 'waiting' };
-                    if (willComplete) {
-                        startOnlineGame();
-                    } else {
-                        showScreen('waiting-screen');
-                        document.getElementById('room-code-display').textContent = code;
-                        gameRef.on('value', (snapshot) => {
-                            let d = snapshot.val();
-                            if (d && d.status === 'playing') {
-                                d = convertFirebaseData(d);
-                                gameState = { ...gameState, ...d };
-                                startOnlineGame();
-                            }
-                        });
-                    }
-                });
-            });
-        }
-
-        function copyRoomCode() {
-            navigator.clipboard.writeText(gameState.roomCode).then(() => {
-                showToast('Code copied!');
-            }).catch(() => {
-                showToast('Code: ' + gameState.roomCode);
-            });
-        }
-
-        function cancelGame() {
-            // Refund bet
-            if (gameState.bet > 0) {
-                playerData.coins += gameState.bet;
-                savePlayerData();
-            }
-
-            if (gameRef) {
-                gameRef.remove();
-                gameRef.off();
-                gameRef = null;
-            }
-            gameState.roomCode = null;
-            showScreen('lobby-screen');
-        }
-
         // ============================================
-        // GAME INITIALIZATION
+        // DECK AND BOARD CREATION
         // ============================================
-        function createInitialGameState(numPlayers = 2) {
-            const board = BOARD_LAYOUT.map(row =>
-                row.map(card => ({
-                    card: card,
-                    chip: card === null ? 'free' : null,
-                    partOfSequence: false
-                }))
-            );
-
-            const deck = createDeck();
-            shuffleDeck(deck);
-
-            const cardsPerPlayer = numPlayers === 2 ? 7 : 6;
-            const hands = {};
-            const sequences = {};
-
-            for (let i = 1; i <= numPlayers; i++) {
-                hands[i] = deck.splice(0, cardsPerPlayer);
-                sequences[i] = 0;
-            }
-
-            return {
-                currentPlayer: 1,
-                board: board,
-                hands: hands,
-                deck: deck,
-                sequences: sequences,
-                numPlayers: numPlayers,
-                sequencesToWin: numPlayers === 2 ? 2 : 1,
-                status: 'playing'
-            };
-        }
-
         function createDeck() {
             const deck = [];
             for (let d = 0; d < 2; d++) {
@@ -1233,13 +1019,358 @@
                     }
                 }
             }
-            return deck;
-        }
-
-        function shuffleDeck(deck) {
+            // Shuffle
             for (let i = deck.length - 1; i > 0; i--) {
                 const j = Math.floor(Math.random() * (i + 1));
                 [deck[i], deck[j]] = [deck[j], deck[i]];
+            }
+            return deck;
+        }
+
+        function createBoard() {
+            const board = [];
+            for (let r = 0; r < 10; r++) {
+                const row = [];
+                for (let c = 0; c < 10; c++) {
+                    row.push({
+                        card: BOARD_LAYOUT[r][c],
+                        chip: BOARD_LAYOUT[r][c] === null ? 'corner' : null,
+                        seq: false
+                    });
+                }
+                board.push(row);
+            }
+            return board;
+        }
+
+        function createNewGame(numPlayers, bet) {
+            const deck = createDeck();
+            const cardsPerPlayer = numPlayers === 2 ? 7 : 6;
+            const hands = {};
+            const sequences = {};
+            const players = {};
+
+            for (let i = 1; i <= numPlayers; i++) {
+                hands['p' + i] = deck.splice(0, cardsPerPlayer);
+                sequences['p' + i] = 0;
+                players['p' + i] = false;
+            }
+            players['p1'] = true; // Creator is always player 1
+
+            return {
+                board: createBoard(),
+                hands: hands,
+                deck: deck,
+                currentPlayer: 1,
+                sequences: sequences,
+                numPlayers: numPlayers,
+                sequencesToWin: numPlayers === 2 ? 2 : 1,
+                status: 'waiting',
+                bet: bet,
+                pot: bet,
+                players: players
+            };
+        }
+
+        // ============================================
+        // FIREBASE DATA CONVERSION
+        // ============================================
+        function toFirebase(data) {
+            // Convert arrays to objects for Firebase
+            const result = JSON.parse(JSON.stringify(data));
+
+            // Convert board array
+            if (result.board) {
+                const boardObj = {};
+                result.board.forEach((row, r) => {
+                    boardObj['r' + r] = {};
+                    row.forEach((cell, c) => {
+                        boardObj['r' + r]['c' + c] = cell;
+                    });
+                });
+                result.board = boardObj;
+            }
+
+            // Convert deck array
+            if (result.deck) {
+                const deckObj = {};
+                result.deck.forEach((card, i) => {
+                    deckObj['i' + i] = card;
+                });
+                result.deck = deckObj;
+                result.deckLength = data.deck.length;
+            }
+
+            // Convert hands arrays
+            if (result.hands) {
+                Object.keys(result.hands).forEach(player => {
+                    const handObj = {};
+                    result.hands[player].forEach((card, i) => {
+                        handObj['i' + i] = card;
+                    });
+                    result.hands[player] = handObj;
+                });
+            }
+
+            return result;
+        }
+
+        function fromFirebase(data) {
+            if (!data) return null;
+            const result = JSON.parse(JSON.stringify(data));
+
+            // Convert board object back to array
+            if (result.board && typeof result.board === 'object') {
+                const boardArr = [];
+                for (let r = 0; r < 10; r++) {
+                    const row = [];
+                    for (let c = 0; c < 10; c++) {
+                        const cell = result.board['r' + r]?.['c' + c];
+                        if (cell) {
+                            row.push(cell);
+                        } else {
+                            row.push({
+                                card: BOARD_LAYOUT[r][c],
+                                chip: BOARD_LAYOUT[r][c] === null ? 'corner' : null,
+                                seq: false
+                            });
+                        }
+                    }
+                    boardArr.push(row);
+                }
+                result.board = boardArr;
+            }
+
+            // Convert deck object back to array
+            if (result.deck && typeof result.deck === 'object' && !Array.isArray(result.deck)) {
+                const deckArr = [];
+                const len = result.deckLength || 0;
+                for (let i = 0; i < len; i++) {
+                    if (result.deck['i' + i]) {
+                        deckArr.push(result.deck['i' + i]);
+                    }
+                }
+                result.deck = deckArr;
+            }
+
+            // Convert hands objects back to arrays
+            if (result.hands) {
+                Object.keys(result.hands).forEach(player => {
+                    if (result.hands[player] && typeof result.hands[player] === 'object' && !Array.isArray(result.hands[player])) {
+                        const handArr = [];
+                        let i = 0;
+                        while (result.hands[player]['i' + i] !== undefined) {
+                            handArr.push(result.hands[player]['i' + i]);
+                            i++;
+                        }
+                        result.hands[player] = handArr;
+                    }
+                });
+            }
+
+            return result;
+        }
+
+        // ============================================
+        // ROOM CREATION / JOINING
+        // ============================================
+        function createRoom() {
+            if (!db) {
+                showToast('Connection error. Try local game.');
+                return;
+            }
+
+            if (selectedBet > playerData.coins) {
+                showToast('Not enough coins!');
+                return;
+            }
+
+            const roomCode = generateRoomCode();
+            currentRoomCode = roomCode;
+            myPlayerNumber = 1;
+            isOnlineMode = true;
+
+            // Deduct bet
+            if (selectedBet > 0) {
+                playerData.coins -= selectedBet;
+                savePlayerData();
+            }
+
+            const newGame = createNewGame(selectedMode, selectedBet);
+            game = fromFirebase(toFirebase(newGame)); // Normalize the data
+
+            gameRef = db.ref('rooms/' + roomCode);
+
+            gameRef.set(toFirebase(newGame))
+                .then(() => {
+                    console.log('Room created:', roomCode);
+                    document.getElementById('room-code-display').textContent = roomCode;
+                    document.getElementById('waiting-pot').textContent = '🪙 ' + newGame.pot;
+                    document.getElementById('waiting-status').textContent = '1/' + selectedMode + ' players joined...';
+                    showScreen('waiting-screen');
+
+                    // Listen for changes
+                    listenToRoom();
+                })
+                .catch(err => {
+                    console.error('Error creating room:', err);
+                    showToast('Error creating room');
+                    // Refund bet
+                    if (selectedBet > 0) {
+                        playerData.coins += selectedBet;
+                        savePlayerData();
+                    }
+                });
+        }
+
+        function joinRoom() {
+            if (!db) {
+                showToast('Connection error');
+                return;
+            }
+
+            const code = document.getElementById('join-code').value.toUpperCase().trim();
+            if (code.length !== 6) {
+                showToast('Enter a 6-character code');
+                return;
+            }
+
+            gameRef = db.ref('rooms/' + code);
+
+            gameRef.once('value')
+                .then(snapshot => {
+                    const data = snapshot.val();
+                    if (!data) {
+                        showToast('Room not found');
+                        return;
+                    }
+
+                    const gameData = fromFirebase(data);
+
+                    // Find empty slot
+                    let slot = null;
+                    for (let i = 2; i <= gameData.numPlayers; i++) {
+                        if (!gameData.players['p' + i]) {
+                            slot = i;
+                            break;
+                        }
+                    }
+
+                    if (!slot) {
+                        showToast('Room is full');
+                        return;
+                    }
+
+                    // Check coins
+                    if (gameData.bet > playerData.coins) {
+                        showToast('Need ' + gameData.bet + ' coins to join');
+                        return;
+                    }
+
+                    // Deduct bet
+                    if (gameData.bet > 0) {
+                        playerData.coins -= gameData.bet;
+                        savePlayerData();
+                    }
+
+                    currentRoomCode = code;
+                    myPlayerNumber = slot;
+                    isOnlineMode = true;
+
+                    // Update room
+                    const updates = {};
+                    updates['players/p' + slot] = true;
+                    updates['pot'] = gameData.pot + gameData.bet;
+
+                    // Check if game should start
+                    const joinedCount = Object.values(gameData.players).filter(v => v).length + 1;
+                    if (joinedCount === gameData.numPlayers) {
+                        updates['status'] = 'playing';
+                    }
+
+                    gameRef.update(updates)
+                        .then(() => {
+                            console.log('Joined room as player', slot);
+                            listenToRoom();
+                        })
+                        .catch(err => {
+                            console.error('Error joining:', err);
+                            showToast('Error joining room');
+                            // Refund
+                            if (gameData.bet > 0) {
+                                playerData.coins += gameData.bet;
+                                savePlayerData();
+                            }
+                        });
+                })
+                .catch(err => {
+                    console.error('Error finding room:', err);
+                    showToast('Error finding room');
+                });
+        }
+
+        function listenToRoom() {
+            if (unsubscribe) {
+                unsubscribe();
+            }
+
+            unsubscribe = gameRef.on('value', snapshot => {
+                const data = snapshot.val();
+                if (!data) {
+                    console.log('Room was deleted');
+                    showToast('Room closed');
+                    backToLobby();
+                    return;
+                }
+
+                game = fromFirebase(data);
+                console.log('Game updated:', game.status, 'Current player:', game.currentPlayer);
+
+                // Update waiting screen
+                const joinedCount = Object.values(game.players).filter(v => v).length;
+                document.getElementById('waiting-status').textContent = joinedCount + '/' + game.numPlayers + ' players joined...';
+                document.getElementById('waiting-pot').textContent = '🪙 ' + game.pot;
+
+                // Check if game started
+                if (game.status === 'playing') {
+                    startGame();
+                }
+
+                // If already in game, re-render
+                if (document.getElementById('game-screen').classList.contains('active')) {
+                    renderGame();
+
+                    if (game.status === 'finished' && game.winner) {
+                        handleGameEnd(game.winner);
+                    }
+                }
+            });
+        }
+
+        function cancelRoom() {
+            // Refund bet
+            if (game.bet > 0) {
+                playerData.coins += game.bet;
+                savePlayerData();
+            }
+
+            if (gameRef) {
+                gameRef.remove();
+                gameRef.off();
+                gameRef = null;
+            }
+
+            currentRoomCode = null;
+            myPlayerNumber = null;
+            isOnlineMode = false;
+            showScreen('lobby-screen');
+        }
+
+        function copyRoomCode() {
+            if (currentRoomCode) {
+                navigator.clipboard.writeText(currentRoomCode)
+                    .then(() => showToast('Code copied!'))
+                    .catch(() => showToast('Code: ' + currentRoomCode));
             }
         }
 
@@ -1248,115 +1379,53 @@
         // ============================================
         function startLocalGame() {
             isOnlineMode = false;
-            const numPlayers = selectedMode;
+            myPlayerNumber = null;
+            currentRoomCode = null;
 
-            gameState = {
-                ...createInitialGameState(numPlayers),
-                roomCode: null,
-                myPlayer: null,
-                bet: selectedBet,
-                pot: selectedBet * numPlayers
-            };
+            const newGame = createNewGame(selectedMode, selectedBet);
+            game = newGame;
 
-            // Deduct bet for local game
+            // Deduct bet for all players in local mode
             if (selectedBet > 0) {
-                playerData.coins -= selectedBet * numPlayers;
+                playerData.coins -= selectedBet * selectedMode;
                 savePlayerData();
             }
 
             showScreen('game-screen');
-            document.getElementById('room-info').textContent = 'Local Game - Pass & Play';
+            document.getElementById('room-info').textContent = 'Local Game';
             setupGameUI();
             renderGame();
         }
 
-        // Helper to convert Firebase objects back to arrays
-        function firebaseToArray(obj) {
-            if (!obj) return [];
-            if (Array.isArray(obj)) return obj;
-            const arr = [];
-            Object.keys(obj).forEach(key => {
-                arr[parseInt(key)] = obj[key];
-            });
-            return arr;
-        }
-
-        function convertFirebaseData(data) {
-            if (!data) return data;
-            // Convert board
-            if (data.board) {
-                data.board = firebaseToArray(data.board).map(row => firebaseToArray(row));
-            }
-            // Convert hands
-            if (data.hands) {
-                Object.keys(data.hands).forEach(key => {
-                    data.hands[key] = firebaseToArray(data.hands[key]);
-                });
-            }
-            // Convert deck
-            if (data.deck) {
-                data.deck = firebaseToArray(data.deck);
-            }
-            return data;
-        }
-
-        function startOnlineGame() {
-            isOnlineMode = true;
+        function startGame() {
             showScreen('game-screen');
-            document.getElementById('room-info').textContent = 'Room: ' + gameState.roomCode;
-
-            gameRef.on('value', (snapshot) => {
-                let data = snapshot.val();
-                if (data) {
-                    data = convertFirebaseData(data);
-                    const selectedCard = gameState.selectedCard;
-                    gameState = { ...gameState, ...data };
-                    gameState.selectedCard = selectedCard;
-                    renderGame();
-
-                    if (data.status === 'finished') {
-                        handleGameEnd(data.winner);
-                    }
-                }
-            });
-
+            document.getElementById('room-info').textContent = 'Room: ' + currentRoomCode;
             setupGameUI();
             renderGame();
         }
 
         function setupGameUI() {
-            const numPlayers = gameState.numPlayers || 2;
+            const numPlayers = game.numPlayers;
 
-            // Update player info display
+            // Player info
             const gameInfo = document.getElementById('game-info');
-            let infoHTML = '';
+            let html = '';
             for (let i = 1; i <= numPlayers; i++) {
-                infoHTML += `<div class="player-info player${i}" id="player${i}-info">P${i} (${PLAYER_COLORS[i]})</div>`;
+                html += `<div class="player-info player${i}" id="player${i}-info">P${i} (${PLAYER_COLORS[i]})</div>`;
             }
-            gameInfo.innerHTML = infoHTML;
+            gameInfo.innerHTML = html;
 
-            // Update scores display
-            const scoresContainer = document.getElementById('scores-container');
-            let scoresHTML = '';
+            // Scores
+            const scores = document.getElementById('scores-container');
+            html = '';
             for (let i = 1; i <= numPlayers; i++) {
-                scoresHTML += `
-                    <div class="score-item player${i}">
-                        <div class="label">Player ${i}</div>
-                        <div class="value" id="score${i}">0</div>
-                    </div>`;
+                html += `<div class="score-item player${i}"><div class="label">Player ${i}</div><div class="value" id="score${i}">0</div></div>`;
             }
-            scoresContainer.innerHTML = scoresHTML;
+            scores.innerHTML = html;
 
-            // Update sequences to win text
-            document.getElementById('sequences-to-win').textContent =
-                `Sequences to Win: ${gameState.sequencesToWin}`;
-
-            // Update pot display
-            document.getElementById('game-pot').textContent = '🪙 ' + (gameState.pot || 0);
-
-            // Hide pot if free game
-            document.getElementById('game-pot-display').style.display =
-                gameState.pot > 0 ? 'block' : 'none';
+            document.getElementById('sequences-to-win').textContent = 'Sequences to Win: ' + game.sequencesToWin;
+            document.getElementById('game-pot').textContent = '🪙 ' + game.pot;
+            document.getElementById('game-pot-display').style.display = game.pot > 0 ? 'block' : 'none';
         }
 
         // ============================================
@@ -1365,18 +1434,17 @@
         function renderGame() {
             renderBoard();
             renderHand();
-            updatePlayerInfo();
-            updateScores();
             updateTurnIndicator();
+            updateScores();
+            updatePlayerHighlight();
         }
 
         function renderBoard() {
             const boardEl = document.getElementById('board');
             boardEl.innerHTML = '';
 
-            // Safety check - ensure board exists
-            if (!gameState.board || !Array.isArray(gameState.board) || gameState.board.length === 0) {
-                console.log('Board not ready yet');
+            if (!game.board || game.board.length === 0) {
+                console.log('Board not ready');
                 return;
             }
 
@@ -1387,11 +1455,9 @@
                     cell.dataset.row = r;
                     cell.dataset.col = c;
 
-                    // Handle Firebase converting arrays to objects
-                    const row = gameState.board[r] || [];
-                    const cellData = row[c] || { card: BOARD_LAYOUT[r][c], chip: BOARD_LAYOUT[r][c] === null ? 'free' : null, partOfSequence: false };
+                    const cellData = game.board[r][c];
 
-                    if (!cellData || cellData.card === null) {
+                    if (cellData.card === null || cellData.chip === 'corner') {
                         cell.classList.add('corner');
                     } else {
                         const rank = cellData.card[0];
@@ -1407,11 +1473,11 @@
                         `;
                     }
 
-                    if (cellData.chip && cellData.chip !== 'free') {
-                        cell.classList.add('has-chip', `chip-player${cellData.chip}`);
+                    if (cellData.chip && cellData.chip !== 'corner' && cellData.chip !== null) {
+                        cell.classList.add('has-chip', 'chip-player' + cellData.chip);
                     }
 
-                    if (cellData.partOfSequence) {
+                    if (cellData.seq) {
                         cell.classList.add('sequence-cell');
                     }
 
@@ -1425,15 +1491,15 @@
 
         function renderHand() {
             const handEl = document.getElementById('hand');
-            const currentPlayer = isOnlineMode ? gameState.myPlayer : gameState.currentPlayer;
-            const hand = gameState.hands[currentPlayer] || [];
-            const isMyTurn = !isOnlineMode || gameState.currentPlayer === gameState.myPlayer;
+            const playerKey = isOnlineMode ? 'p' + myPlayerNumber : 'p' + game.currentPlayer;
+            const hand = game.hands[playerKey] || [];
+            const isMyTurn = !isOnlineMode || game.currentPlayer === myPlayerNumber;
 
             handEl.innerHTML = hand.map((card, index) => {
                 const rank = card[0];
                 const suit = card[1];
                 const isRed = suit === 'H' || suit === 'D';
-                const isSelected = gameState.selectedCard === index;
+                const isSelected = selectedCardIndex === index;
 
                 let jackClass = '';
                 if (rank === 'J') {
@@ -1449,89 +1515,81 @@
                 `;
             }).join('');
 
-            const handLabel = document.getElementById('hand-label');
-            handLabel.textContent = isOnlineMode ? 'Your Hand' : `Player ${gameState.currentPlayer}'s Hand`;
-        }
-
-        function updatePlayerInfo() {
-            const numPlayers = gameState.numPlayers || 2;
-            for (let i = 1; i <= numPlayers; i++) {
-                const el = document.getElementById(`player${i}-info`);
-                if (el) {
-                    el.classList.toggle('active', gameState.currentPlayer === i);
-                    el.classList.toggle('you', gameState.myPlayer === i);
-                }
-            }
+            document.getElementById('hand-label').textContent = isOnlineMode ? 'Your Hand' : `Player ${game.currentPlayer}'s Hand`;
         }
 
         function updateTurnIndicator() {
             const indicator = document.getElementById('turn-indicator');
-
             if (!isOnlineMode) {
-                indicator.textContent = `Player ${gameState.currentPlayer}'s Turn`;
+                indicator.textContent = `Player ${game.currentPlayer}'s Turn`;
                 indicator.className = 'turn-indicator your-turn';
-            } else if (gameState.currentPlayer === gameState.myPlayer) {
+            } else if (game.currentPlayer === myPlayerNumber) {
                 indicator.textContent = 'Your Turn';
                 indicator.className = 'turn-indicator your-turn';
             } else {
-                indicator.textContent = `Player ${gameState.currentPlayer}'s Turn`;
+                indicator.textContent = `Player ${game.currentPlayer}'s Turn`;
                 indicator.className = 'turn-indicator waiting';
             }
         }
 
         function updateScores() {
-            const numPlayers = gameState.numPlayers || 2;
-            for (let i = 1; i <= numPlayers; i++) {
-                const el = document.getElementById(`score${i}`);
+            for (let i = 1; i <= game.numPlayers; i++) {
+                const el = document.getElementById('score' + i);
                 if (el) {
-                    el.textContent = gameState.sequences[i] || 0;
+                    el.textContent = game.sequences['p' + i] || 0;
+                }
+            }
+        }
+
+        function updatePlayerHighlight() {
+            for (let i = 1; i <= game.numPlayers; i++) {
+                const el = document.getElementById('player' + i + '-info');
+                if (el) {
+                    el.classList.toggle('active', game.currentPlayer === i);
+                    el.classList.toggle('you', myPlayerNumber === i);
                 }
             }
         }
 
         function highlightValidMoves() {
-            document.querySelectorAll('.cell').forEach(cell => {
-                cell.classList.remove('selected-card-match');
-            });
+            document.querySelectorAll('.cell').forEach(cell => cell.classList.remove('selected-card-match'));
 
-            if (gameState.selectedCard === null) return;
-            if (isOnlineMode && gameState.currentPlayer !== gameState.myPlayer) return;
+            if (selectedCardIndex === null) return;
+            if (isOnlineMode && game.currentPlayer !== myPlayerNumber) return;
 
-            const currentPlayer = isOnlineMode ? gameState.myPlayer : gameState.currentPlayer;
-            const card = gameState.hands[currentPlayer]?.[gameState.selectedCard];
+            const playerKey = isOnlineMode ? 'p' + myPlayerNumber : 'p' + game.currentPlayer;
+            const card = game.hands[playerKey]?.[selectedCardIndex];
             if (!card) return;
 
             const rank = card[0];
             const suit = card[1];
 
-            if (rank === 'J') {
-                if (suit === 'D' || suit === 'C') {
-                    // Wild - place anywhere empty
-                    for (let r = 0; r < 10; r++) {
-                        for (let c = 0; c < 10; c++) {
-                            if (gameState.board[r][c].chip === null) {
-                                document.querySelector(`[data-row="${r}"][data-col="${c}"]`)?.classList.add('selected-card-match');
+            for (let r = 0; r < 10; r++) {
+                for (let c = 0; c < 10; c++) {
+                    const cellData = game.board[r][c];
+                    let highlight = false;
+
+                    if (rank === 'J') {
+                        if (suit === 'D' || suit === 'C') {
+                            // Two-eyed jack - wild, place anywhere empty
+                            if (cellData.chip === null && cellData.card !== null) {
+                                highlight = true;
+                            }
+                        } else {
+                            // One-eyed jack - remove opponent chip
+                            const currentPlayerNum = isOnlineMode ? myPlayerNumber : game.currentPlayer;
+                            if (cellData.chip && cellData.chip !== currentPlayerNum && cellData.chip !== 'corner' && !cellData.seq) {
+                                highlight = true;
                             }
                         }
-                    }
-                } else {
-                    // Remove - any opponent chip not in sequence
-                    for (let r = 0; r < 10; r++) {
-                        for (let c = 0; c < 10; c++) {
-                            const cellData = gameState.board[r][c];
-                            if (cellData.chip && cellData.chip !== currentPlayer &&
-                                cellData.chip !== 'free' && !cellData.partOfSequence) {
-                                document.querySelector(`[data-row="${r}"][data-col="${c}"]`)?.classList.add('selected-card-match');
-                            }
+                    } else {
+                        if (cellData.card === card && cellData.chip === null) {
+                            highlight = true;
                         }
                     }
-                }
-            } else {
-                for (let r = 0; r < 10; r++) {
-                    for (let c = 0; c < 10; c++) {
-                        if (gameState.board[r][c].card === card && gameState.board[r][c].chip === null) {
-                            document.querySelector(`[data-row="${r}"][data-col="${c}"]`)?.classList.add('selected-card-match');
-                        }
+
+                    if (highlight) {
+                        document.querySelector(`[data-row="${r}"][data-col="${c}"]`)?.classList.add('selected-card-match');
                     }
                 }
             }
@@ -1541,54 +1599,57 @@
         // GAME ACTIONS
         // ============================================
         function selectCard(index) {
-            if (isOnlineMode && gameState.currentPlayer !== gameState.myPlayer) {
+            if (isOnlineMode && game.currentPlayer !== myPlayerNumber) {
                 showToast('Wait for your turn');
                 return;
             }
 
-            gameState.selectedCard = gameState.selectedCard === index ? null : index;
+            selectedCardIndex = selectedCardIndex === index ? null : index;
             renderHand();
             highlightValidMoves();
         }
 
         function onCellClick(row, col) {
-            if (isOnlineMode && gameState.currentPlayer !== gameState.myPlayer) {
+            if (isOnlineMode && game.currentPlayer !== myPlayerNumber) {
                 showToast('Wait for your turn');
                 return;
             }
 
-            if (gameState.selectedCard === null) {
+            if (selectedCardIndex === null) {
                 showToast('Select a card first');
                 return;
             }
 
-            const currentPlayer = isOnlineMode ? gameState.myPlayer : gameState.currentPlayer;
-            const card = gameState.hands[currentPlayer][gameState.selectedCard];
-            const cellData = gameState.board[row][col];
+            const playerKey = isOnlineMode ? 'p' + myPlayerNumber : 'p' + game.currentPlayer;
+            const currentPlayerNum = isOnlineMode ? myPlayerNumber : game.currentPlayer;
+            const card = game.hands[playerKey][selectedCardIndex];
+            const cellData = game.board[row][col];
             const rank = card[0];
             const suit = card[1];
 
             if (rank === 'J') {
                 if (suit === 'D' || suit === 'C') {
+                    // Wild jack
                     if (cellData.chip !== null) {
-                        showToast('Space occupied');
+                        showToast('Space is occupied');
                         return;
                     }
                     if (cellData.card === null) {
                         showToast('Cannot place on corner');
                         return;
                     }
-                    placeChip(row, col);
+                    placeChip(row, col, currentPlayerNum, playerKey);
                 } else {
-                    if (!cellData.chip || cellData.chip === currentPlayer || cellData.chip === 'free') {
+                    // Remove jack
+                    if (!cellData.chip || cellData.chip === currentPlayerNum || cellData.chip === 'corner') {
                         showToast('Select opponent chip');
                         return;
                     }
-                    if (cellData.partOfSequence) {
+                    if (cellData.seq) {
                         showToast('Cannot remove from sequence');
                         return;
                     }
-                    removeChip(row, col);
+                    removeChip(row, col, playerKey);
                 }
             } else {
                 if (cellData.card !== card) {
@@ -1596,70 +1657,54 @@
                     return;
                 }
                 if (cellData.chip !== null) {
-                    showToast('Space occupied');
+                    showToast('Space is occupied');
                     return;
                 }
-                placeChip(row, col);
+                placeChip(row, col, currentPlayerNum, playerKey);
             }
         }
 
-        function placeChip(row, col) {
-            const currentPlayer = isOnlineMode ? gameState.myPlayer : gameState.currentPlayer;
+        function placeChip(row, col, playerNum, playerKey) {
+            game.board[row][col].chip = playerNum;
+            game.hands[playerKey].splice(selectedCardIndex, 1);
 
-            gameState.board[row][col].chip = currentPlayer;
-            gameState.hands[currentPlayer].splice(gameState.selectedCard, 1);
-
-            if (gameState.deck.length > 0) {
-                gameState.hands[currentPlayer].push(gameState.deck.pop());
+            if (game.deck.length > 0) {
+                game.hands[playerKey].push(game.deck.pop());
             }
 
-            gameState.selectedCard = null;
-            checkForSequences(currentPlayer);
+            selectedCardIndex = null;
+            checkForSequences(playerNum);
 
-            if (gameState.sequences[currentPlayer] >= gameState.sequencesToWin) {
-                gameState.status = 'finished';
-                gameState.winner = currentPlayer;
-
-                if (isOnlineMode) {
-                    syncGameState();
-                }
-
+            if (game.sequences['p' + playerNum] >= game.sequencesToWin) {
+                game.status = 'finished';
+                game.winner = playerNum;
+                syncGame();
                 renderGame();
-                handleGameEnd(currentPlayer);
+                handleGameEnd(playerNum);
                 return;
             }
 
             // Next player
-            gameState.currentPlayer = (gameState.currentPlayer % gameState.numPlayers) + 1;
-
-            if (isOnlineMode) {
-                syncGameState();
-            }
-
+            game.currentPlayer = (game.currentPlayer % game.numPlayers) + 1;
+            syncGame();
             renderGame();
         }
 
-        function removeChip(row, col) {
-            const currentPlayer = isOnlineMode ? gameState.myPlayer : gameState.currentPlayer;
+        function removeChip(row, col, playerKey) {
+            game.board[row][col].chip = null;
+            game.hands[playerKey].splice(selectedCardIndex, 1);
 
-            gameState.board[row][col].chip = null;
-            gameState.hands[currentPlayer].splice(gameState.selectedCard, 1);
-
-            if (gameState.deck.length > 0) {
-                gameState.hands[currentPlayer].push(gameState.deck.pop());
+            if (game.deck.length > 0) {
+                game.hands[playerKey].push(game.deck.pop());
             }
 
-            gameState.selectedCard = null;
-            gameState.currentPlayer = (gameState.currentPlayer % gameState.numPlayers) + 1;
-
-            if (isOnlineMode) {
-                syncGameState();
-            }
-
+            selectedCardIndex = null;
+            game.currentPlayer = (game.currentPlayer % game.numPlayers) + 1;
+            syncGame();
             renderGame();
         }
 
-        function checkForSequences(player) {
+        function checkForSequences(playerNum) {
             const directions = [[0, 1], [1, 0], [1, 1], [1, -1]];
 
             for (let r = 0; r < 10; r++) {
@@ -1677,8 +1722,8 @@
                                 break;
                             }
 
-                            const chip = gameState.board[nr][nc].chip;
-                            if (chip === player || chip === 'free') {
+                            const chip = game.board[nr][nc].chip;
+                            if (chip === playerNum || chip === 'corner') {
                                 cells.push([nr, nc]);
                             } else {
                                 valid = false;
@@ -1686,25 +1731,31 @@
                             }
                         }
 
-                        if (valid && cells.some(([cr, cc]) => !gameState.board[cr][cc].partOfSequence)) {
+                        if (valid && cells.some(([cr, cc]) => !game.board[cr][cc].seq)) {
                             cells.forEach(([cr, cc]) => {
-                                gameState.board[cr][cc].partOfSequence = true;
+                                game.board[cr][cc].seq = true;
                             });
-                            gameState.sequences[player]++;
+                            game.sequences['p' + playerNum]++;
                         }
                     }
                 }
             }
         }
 
+        function syncGame() {
+            if (!isOnlineMode || !gameRef) return;
+
+            gameRef.update(toFirebase(game))
+                .catch(err => console.error('Sync error:', err));
+        }
+
         // ============================================
         // GAME END
         // ============================================
         function handleGameEnd(winner) {
-            const isWinner = isOnlineMode ? (winner === gameState.myPlayer) : true;
-            const pot = gameState.pot || 0;
+            const isWinner = isOnlineMode ? (winner === myPlayerNumber) : true;
+            const pot = game.pot || 0;
 
-            // Update stats
             playerData.games++;
             if (isWinner || !isOnlineMode) {
                 playerData.wins++;
@@ -1712,10 +1763,6 @@
             }
             savePlayerData();
 
-            showWinModal(winner, pot, isWinner);
-        }
-
-        function showWinModal(winner, pot, isWinner) {
             const modal = document.getElementById('win-modal');
             const winnerText = document.getElementById('winner-text');
             const winningsText = document.getElementById('winnings-text');
@@ -1725,11 +1772,10 @@
             } else {
                 winnerText.textContent = `Player ${winner} Wins!`;
             }
-
-            winnerText.className = `winner-text player${winner}`;
+            winnerText.className = 'winner-text player' + winner;
 
             if (pot > 0) {
-                winningsText.textContent = isWinner ? `+${pot} coins!` : `-${gameState.bet} coins`;
+                winningsText.textContent = isWinner ? '+' + pot + ' coins!' : '-' + game.bet + ' coins';
                 winningsText.style.color = isWinner ? '#4ade80' : '#ef4444';
             } else {
                 winningsText.textContent = '';
@@ -1738,26 +1784,24 @@
             modal.classList.add('show');
         }
 
-        function closeWinModal() {
-            document.getElementById('win-modal').classList.remove('show');
-        }
-
         function playAgain() {
-            closeWinModal();
+            document.getElementById('win-modal').classList.remove('show');
 
             if (isOnlineMode) {
-                const newState = createInitialGameState(gameState.numPlayers);
-                newState.pot = gameState.bet * gameState.numPlayers;
-                newState.bet = gameState.bet;
-                gameState = { ...gameState, ...newState };
-                syncGameState();
+                // Reset game state
+                const newGame = createNewGame(game.numPlayers, game.bet);
+                newGame.players = game.players;
+                newGame.pot = game.bet * game.numPlayers;
+                newGame.status = 'playing';
+                game = newGame;
+                syncGame();
             } else {
                 startLocalGame();
             }
         }
 
         function backToLobby() {
-            closeWinModal();
+            document.getElementById('win-modal').classList.remove('show');
             leaveGame();
         }
 
@@ -1766,40 +1810,31 @@
                 gameRef.off();
                 gameRef = null;
             }
-            gameState = {
-                roomCode: null,
-                myPlayer: null,
-                numPlayers: 2,
-                currentPlayer: 1,
+            if (unsubscribe) {
+                unsubscribe = null;
+            }
+
+            currentRoomCode = null;
+            myPlayerNumber = null;
+            isOnlineMode = false;
+            selectedCardIndex = null;
+
+            game = {
                 board: [],
                 hands: {},
                 deck: [],
-                selectedCard: null,
+                currentPlayer: 1,
                 sequences: {},
+                numPlayers: 2,
+                sequencesToWin: 2,
                 status: 'waiting',
                 bet: 0,
-                pot: 0
+                pot: 0,
+                players: {}
             };
+
             showScreen('lobby-screen');
             updateBetButtons();
-        }
-
-        // ============================================
-        // FIREBASE SYNC
-        // ============================================
-        function syncGameState() {
-            if (!isOnlineMode || !gameRef) return;
-
-            gameRef.update({
-                currentPlayer: gameState.currentPlayer,
-                board: gameState.board,
-                hands: gameState.hands,
-                deck: gameState.deck,
-                sequences: gameState.sequences,
-                status: gameState.status,
-                winner: gameState.winner || null,
-                pot: gameState.pot
-            });
         }
 
         // ============================================
@@ -1823,12 +1858,11 @@
         // ============================================
         // CONNECTION STATUS
         // ============================================
-        if (isFirebaseConfigured) {
-            const connectedRef = db.ref('.info/connected');
-            connectedRef.on('value', (snap) => {
+        if (db) {
+            db.ref('.info/connected').on('value', snap => {
                 const status = document.getElementById('connection-status');
                 if (snap.val() === true) {
-                    status.textContent = 'Connected';
+                    status.textContent = 'Online';
                     status.className = 'connection-status connected';
                 } else {
                     status.textContent = 'Offline';
@@ -1839,7 +1873,6 @@
 
         // Initialize
         init();
-        showScreen('lobby-screen');
     </script>
 </body>
 </html>

@@ -1567,23 +1567,25 @@
             for (let r = 0; r < 10; r++) {
                 for (let c = 0; c < 10; c++) {
                     const cellData = game.board[r][c];
+                    const isEmpty = cellData.chip === null || cellData.chip === undefined;
+                    const isCorner = cellData.chip === 'corner' || cellData.card === null;
                     let highlight = false;
 
                     if (rank === 'J') {
                         if (suit === 'D' || suit === 'C') {
-                            // Two-eyed jack - wild, place anywhere empty
-                            if (cellData.chip === null && cellData.card !== null) {
+                            // Two-eyed jack - wild, place anywhere empty (not corner)
+                            if (isEmpty && !isCorner) {
                                 highlight = true;
                             }
                         } else {
                             // One-eyed jack - remove opponent chip
                             const currentPlayerNum = isOnlineMode ? myPlayerNumber : game.currentPlayer;
-                            if (cellData.chip && cellData.chip !== currentPlayerNum && cellData.chip !== 'corner' && !cellData.seq) {
+                            if (!isEmpty && !isCorner && cellData.chip !== currentPlayerNum && !cellData.seq) {
                                 highlight = true;
                             }
                         }
                     } else {
-                        if (cellData.card === card && cellData.chip === null) {
+                        if (cellData.card === card && isEmpty) {
                             highlight = true;
                         }
                     }
@@ -1627,21 +1629,25 @@
             const rank = card[0];
             const suit = card[1];
 
+            // Check if cell is empty (Firebase removes null, so check for both)
+            const isEmpty = cellData.chip === null || cellData.chip === undefined;
+            const isCorner = cellData.chip === 'corner' || cellData.card === null;
+
             if (rank === 'J') {
                 if (suit === 'D' || suit === 'C') {
-                    // Wild jack
-                    if (cellData.chip !== null) {
+                    // Wild jack - place anywhere empty
+                    if (!isEmpty) {
                         showToast('Space is occupied');
                         return;
                     }
-                    if (cellData.card === null) {
+                    if (isCorner) {
                         showToast('Cannot place on corner');
                         return;
                     }
                     placeChip(row, col, currentPlayerNum, playerKey);
                 } else {
-                    // Remove jack
-                    if (!cellData.chip || cellData.chip === currentPlayerNum || cellData.chip === 'corner') {
+                    // Remove jack - remove opponent chip
+                    if (isEmpty || isCorner || cellData.chip === currentPlayerNum) {
                         showToast('Select opponent chip');
                         return;
                     }
@@ -1656,7 +1662,7 @@
                     showToast('Card doesn\'t match');
                     return;
                 }
-                if (cellData.chip !== null) {
+                if (!isEmpty) {
                     showToast('Space is occupied');
                     return;
                 }

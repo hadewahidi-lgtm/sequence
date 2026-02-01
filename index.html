@@ -1056,8 +1056,9 @@
                 showScreen('waiting-screen');
 
                 gameRef.on('value', (snapshot) => {
-                    const data = snapshot.val();
+                    let data = snapshot.val();
                     if (data) {
+                        data = convertFirebaseData(data);
                         gameState = { ...gameState, ...data };
                         document.getElementById('waiting-pot').textContent = '🪙 ' + (data.pot || 0);
                         updateWaitingStatus();
@@ -1071,7 +1072,7 @@
                 });
             });
 
-            gameRef.onDisconnect().remove();
+            // Room will persist until game ends
         }
 
         function updateWaitingStatus() {
@@ -1096,11 +1097,12 @@
 
             gameRef = db.ref('games/' + code);
             gameRef.once('value').then((snapshot) => {
-                const data = snapshot.val();
+                let data = snapshot.val();
                 if (!data) {
                     showToast('Room not found');
                     return;
                 }
+                data = convertFirebaseData(data);
 
                 // Find empty slot
                 let playerSlot = null;
@@ -1150,8 +1152,9 @@
                         showScreen('waiting-screen');
                         document.getElementById('room-code-display').textContent = code;
                         gameRef.on('value', (snapshot) => {
-                            const d = snapshot.val();
+                            let d = snapshot.val();
                             if (d && d.status === 'playing') {
+                                d = convertFirebaseData(d);
                                 gameState = { ...gameState, ...d };
                                 startOnlineGame();
                             }
@@ -1267,14 +1270,45 @@
             renderGame();
         }
 
+        // Helper to convert Firebase objects back to arrays
+        function firebaseToArray(obj) {
+            if (!obj) return [];
+            if (Array.isArray(obj)) return obj;
+            const arr = [];
+            Object.keys(obj).forEach(key => {
+                arr[parseInt(key)] = obj[key];
+            });
+            return arr;
+        }
+
+        function convertFirebaseData(data) {
+            if (!data) return data;
+            // Convert board
+            if (data.board) {
+                data.board = firebaseToArray(data.board).map(row => firebaseToArray(row));
+            }
+            // Convert hands
+            if (data.hands) {
+                Object.keys(data.hands).forEach(key => {
+                    data.hands[key] = firebaseToArray(data.hands[key]);
+                });
+            }
+            // Convert deck
+            if (data.deck) {
+                data.deck = firebaseToArray(data.deck);
+            }
+            return data;
+        }
+
         function startOnlineGame() {
             isOnlineMode = true;
             showScreen('game-screen');
             document.getElementById('room-info').textContent = 'Room: ' + gameState.roomCode;
 
             gameRef.on('value', (snapshot) => {
-                const data = snapshot.val();
+                let data = snapshot.val();
                 if (data) {
+                    data = convertFirebaseData(data);
                     const selectedCard = gameState.selectedCard;
                     gameState = { ...gameState, ...data };
                     gameState.selectedCard = selectedCard;
@@ -1340,6 +1374,12 @@
             const boardEl = document.getElementById('board');
             boardEl.innerHTML = '';
 
+            // Safety check - ensure board exists
+            if (!gameState.board || !Array.isArray(gameState.board) || gameState.board.length === 0) {
+                console.log('Board not ready yet');
+                return;
+            }
+
             for (let r = 0; r < 10; r++) {
                 for (let c = 0; c < 10; c++) {
                     const cell = document.createElement('div');
@@ -1347,9 +1387,11 @@
                     cell.dataset.row = r;
                     cell.dataset.col = c;
 
-                    const cellData = gameState.board[r][c];
+                    // Handle Firebase converting arrays to objects
+                    const row = gameState.board[r] || [];
+                    const cellData = row[c] || { card: BOARD_LAYOUT[r][c], chip: BOARD_LAYOUT[r][c] === null ? 'free' : null, partOfSequence: false };
 
-                    if (cellData.card === null) {
+                    if (!cellData || cellData.card === null) {
                         cell.classList.add('corner');
                     } else {
                         const rank = cellData.card[0];
